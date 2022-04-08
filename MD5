@@ -1,11 +1,11 @@
-79fae710e6ca3bcbc96b0edd7a1adf3e *DESCRIPTION
+b680a0e74a0555f0383b4ee42b3c0368 *DESCRIPTION
 bd9b9946a27f605bb8d596f005c5c3fd *LICENSE
 8f263ef7a7cc52817f5371e7e1af5bcb *NAMESPACE
 970bbc33918cb8627b3bd14b94e48728 *R/RcppExports.R
 9d9b9c3b5f2356ca479957af22e97151 *inst/extdata/multi-test.xlsx
 8a2dee157c04d37940deaf497c6772e1 *man/SheetReader-package.Rd
 7eb7a0a34c018b9ca127383f7cb0e7d9 *man/read_xlsx.Rd
-b589a67d11b6320231951bf927af2d23 *src/Makevars
+8db15939fc54e4332c887598137cf971 *src/Makevars
 a8ba6f27d1c967d93dc868ed38e11792 *src/RcppExports.cpp
 6de92022a4cdaaeb0b330f16e155db7d *src/XlsxColumn.cpp
 05d15d0ce0d75dd3268fc9067fb90e0a *src/XlsxColumn.h
