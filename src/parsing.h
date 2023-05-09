@@ -6,6 +6,7 @@
 
 class ValueParser {
 public:
+    virtual ~ValueParser() {};
     virtual void process(const unsigned char character) = 0;
     virtual void reset() = 0;
 };
@@ -13,7 +14,7 @@ public:
 class IndexParser : public ValueParser {
     unsigned long mValue;
 public:
-    void process(const unsigned char character) {
+    void process(const unsigned char character) override {
         mValue = mValue * 10 + (character - '0');
     }
 
@@ -21,7 +22,7 @@ public:
         return mValue;
     }
 
-    void reset() {
+    void reset() override {
         mValue = 0;
     }
 };
@@ -32,7 +33,7 @@ class StringParser : public ValueParser {
     size_t mWrite;
     //TODO: additional dynamic storage
 public:
-    void process(const unsigned char character) {
+    void process(const unsigned char character) override {
         if (mWrite <= sStaticSize) {
             mStatic[mWrite++] = character;
         } else {
@@ -49,7 +50,7 @@ public:
         }
     }
 
-    void reset() {
+    void reset() override {
         mWrite = 0;
         mStatic[0] = 0;
         //TODO: dynamic
@@ -60,7 +61,7 @@ class LocationParser : public ValueParser {
     unsigned long mColumn;
     unsigned long mRow;
 public:
-    void process(const unsigned char character) {
+    void process(const unsigned char character) override {
         //TODO: prevent reading digits before alphabetic and alphabetic after digits?
         if (isalpha(character)) {
             mColumn = mColumn * 26 + (character - 64);
@@ -73,7 +74,7 @@ public:
         return std::pair<unsigned long, unsigned long>(mColumn, mRow);
     }
 
-    void reset() {
+    void reset() override {
         mColumn = 0;
         mRow = 0;
     }
@@ -85,7 +86,7 @@ class RangeParser : public ValueParser {
     bool mIsEnd;
 public:
 
-    void process(const unsigned char character) {
+    void process(const unsigned char character) override {
         if (character == ':') {
             mIsEnd = true;
         } else if (mIsEnd) {
@@ -99,7 +100,7 @@ public:
         return std::pair<std::pair<unsigned long, unsigned long>, std::pair<unsigned long, unsigned long>>(mStart.getValue(), mEnd.getValue());
     }
 
-    void reset() {
+    void reset() override {
         mStart.reset();
         mEnd.reset();
         mIsEnd = false;
@@ -107,34 +108,34 @@ public:
 };
 
 class TypeParser : public ValueParser {
-    XlsxColumn::CellType mType;
+    CellType mType;
 public:
-    void process(const unsigned char character) {
-        if (mType == XlsxColumn::CellType::T_NONE) {
+    void process(const unsigned char character) override {
+        if (mType == CellType::T_NONE) {
             if (character == 'b') {
-                mType = XlsxColumn::CellType::T_BOOLEAN;
+                mType = CellType::T_BOOLEAN;
             } else if (character == 'd') {
-                mType = XlsxColumn::CellType::T_DATE;
+                mType = CellType::T_DATE;
             } else if (character == 'e') {
-                mType = XlsxColumn::CellType::T_ERROR;
+                mType = CellType::T_ERROR;
             } else if (character == 'n') {
-                mType = XlsxColumn::CellType::T_NUMERIC;
+                mType = CellType::T_NUMERIC;
             } else if (character == 's') {
-                mType = XlsxColumn::CellType::T_STRING_REF;
+                mType = CellType::T_STRING_REF;
             } else if (character == 'i') {
-                mType = XlsxColumn::CellType::T_STRING_INLINE;
+                mType = CellType::T_STRING_INLINE;
             }
-        } else if (mType == XlsxColumn::CellType::T_STRING_REF && character == 't') {
-            mType = XlsxColumn::CellType::T_STRING;
+        } else if (mType == CellType::T_STRING_REF && character == 't') {
+            mType = CellType::T_STRING;
         }
     }
 
-    XlsxColumn::CellType getValue() const {
+    CellType getValue() const {
         return mType;
     }
 
-    void reset() {
-        mType = XlsxColumn::CellType::T_NONE;
+    void reset() override {
+        mType = CellType::T_NONE;
     }
 };
 
@@ -379,6 +380,10 @@ public:
         return mState == State::INSIDE || mState == State::END || mState == State::END_NAME;
     }
 
+    bool atStart() const {
+        return mState == State::START || mState == State::START_NAME || mState == State::START_ATTRIBUTE_NAME || mState == State::START_ATTRIBUTE_VALUE;
+    }
+
     bool completedStart() {
         const bool ret = mCompleted > 0;
         mCompleted = 0;
@@ -401,5 +406,14 @@ public:
 
     int getCloseLength() const {
         return mCloseLength;
+    }
+
+    void reset() {
+        mScan = -1;
+        mCurrentAttribute = -1;
+        mPrevCloseSlash = false;
+        mCloseLength = 0;
+        mState = State::OUTSIDE;
+        mCompleted = 0;
     }
 };

@@ -3,10 +3,11 @@
 #include <string>
 #include <vector>
 #include <future>
-#include <unordered_map>
 
 #include "miniz/miniz.h"
+#if defined(TARGET_R)
 #include <Rcpp.h>
+#endif
 
 #include "XlsxSheet.h"
 
@@ -24,12 +25,11 @@ public:
     std::vector<std::tuple<int, std::string, std::string, std::string>> mSheetIndex;
     bool mDate1904;
     bool mParallelStrings;
-    bool mStringsConsecutive;
     std::future<void> mParallelStringFuture;
 
 #if defined(TARGET_R)
     Rcpp::CharacterVector mSharedStrings;
-    std::vector<std::string> mDynamicStrings;
+    std::vector<std::vector<std::string>> mDynamicStrings;
 #   define STRING_TYPE SEXP
 #elif defined(TARGET_PYTHON)
     //TODO
@@ -49,13 +49,13 @@ public:
     void parseWorkbookRelationships();
     void parseStyles();
     void parseSharedStrings();
-    void parseSharedStringsConsecutive();
     void parseSharedStringsInterleaved();
     void finalize();
     bool isDate(unsigned long style) const;
     double toDate(double date) const;
-    unsigned long long addDynamicString(const char* str);
-    const std::string& getDynamicString(const unsigned long long index);
+    void prepareDynamicStrings(const int numThreads);
+    unsigned long long addDynamicString(const int threadId, const char* str);
+    const std::string& getDynamicString(const int threadId, const unsigned long long index) const;
 
     int getArchiveIndex(const std::string& path);
     XlsxSheet getSheet(const int id);
