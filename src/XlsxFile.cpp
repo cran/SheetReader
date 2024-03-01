@@ -136,7 +136,7 @@ void XlsxFile::parseWorkbook() {
                 }
                 mSheetIndex.emplace_back(
                     static_cast<const IndexParser&>(sheet.getAttribute(1)).getValue(),
-                    static_cast<const StringParser&>(sheet.getAttribute(0)).getValue(),
+                    unescape(static_cast<const StringParser&>(sheet.getAttribute(0)).getValue()),
                     static_cast<const StringParser&>(sheet.getAttribute(2)).getValue(),
                     ""
                 );
@@ -301,7 +301,7 @@ void XlsxFile::parseStyles() {
                     continue;
                 }
 
-                const std::string format = static_cast<const StringParser&>(numFmt.getAttribute(1)).getValue();
+                const std::string format = unescape(static_cast<const StringParser&>(numFmt.getAttribute(1)).getValue());
                 //TODO: this should probably be done in a better way
                 for (size_t i = 0; i < format.length(); ++i) {
                     const char c = format.at(i);
@@ -386,6 +386,8 @@ double XlsxFile::toDate(double date) const {
 void XlsxFile::prepareDynamicStrings(const int numThreads) {
 # if defined(TARGET_R)
     mDynamicStrings.resize(numThreads);
+#else
+    mDynamicStrings.resize(numThreads);
 #endif
 }
 
@@ -396,7 +398,10 @@ unsigned long long XlsxFile::addDynamicString(const int threadId, const char* st
 #elif defined(TARGET_PYTHON)
     //TODO:
 #else
-    //TODO:
+    // insert threadId as 16 most-significant bits in returned string index
+    const unsigned long long baseIndex = mDynamicStrings[threadId].size();
+    mDynamicStrings[threadId].push_back(str);
+    const unsigned long long idx = baseIndex | ((static_cast<unsigned long long>(threadId) & 0xFFull) << 56);
 #endif
     return idx;
 }
@@ -404,6 +409,10 @@ unsigned long long XlsxFile::addDynamicString(const int threadId, const char* st
 const std::string& XlsxFile::getDynamicString(const int threadId, const unsigned long long index) const {
 #if defined(TARGET_R)
     return mDynamicStrings[threadId][index];
+#else
+    if (threadId >= 0) return mDynamicStrings[threadId][index & 0xFFFFFFFFFFFFFFull];
+    // decode embedded threadId
+    return mDynamicStrings[index >> 56][index & 0xFFFFFFFFFFFFFFull];
 #endif
 }
 
@@ -430,11 +439,13 @@ void XlsxFile::parseSharedStringsInterleaved() {
     mz_zip_archive* file = mFileSharedStrings == nullptr ? mFile : mFileSharedStrings;
     const int relIndex = fileIndex(file, mPathSharedStrings.c_str());
     if (relIndex < 0) {
+        stringCount.store(-1);
         throw std::runtime_error("Failed to retrieve shared strings file");
     }
 
     mz_zip_reader_extract_iter_state* state = mz_zip_reader_extract_iter_new(file, relIndex, 0);
     if (!state) {
+        stringCount.store(-1);
         throw std::runtime_error("Failed to initialize reader state for shared strings");
     }
 
@@ -453,6 +464,7 @@ void XlsxFile::parseSharedStringsInterleaved() {
 
     unsigned long uniqueCount = 0;
     unsigned long numSharedStrings = 0;
+    stringCount.store(0);
 
     while (true) {
         if (offset >= read) {
@@ -460,6 +472,7 @@ void XlsxFile::parseSharedStringsInterleaved() {
             read = mz_zip_reader_extract_iter_read(state, buffer, bufferSize, err);
             if (state->status < 0) {
                 mz_zip_reader_extract_iter_free(state);
+                stringCount.store(-1);
                 throw std::runtime_error("Error while decompressing shared strings");
             }
             if (read == 0) break;
@@ -496,6 +509,7 @@ void XlsxFile::parseSharedStringsInterleaved() {
         if (si.completed()) {
             if (uniqueCount > 0 && numSharedStrings >= uniqueCount) {
                 mz_zip_reader_extract_iter_free(state);
+                stringCount.store(-1);
                 throw std::runtime_error("Parsed more strings than allocated for");
             }
 #if defined(TARGET_R)
@@ -509,12 +523,15 @@ void XlsxFile::parseSharedStringsInterleaved() {
                     mSharedStrings = newStrings;
                 }
             }
-            unescape(tBuffer);
+            unescape(tBuffer, tBufferLength);
             mSharedStrings[numSharedStrings++] = Rf_mkCharCE(tBuffer, CE_UTF8);
 #elif defined(TARGET_PYTHON)
             //TODO:
 #else
-            //TODO:
+            unescape(tBuffer, tBufferLength);
+            mSharedStrings.push_back(tBuffer);
+            numSharedStrings = mSharedStrings.size();
+            stringCount.fetch_add(1);
 #endif
             tBufferLength = 0;
             tBuffer[0] = 0;
@@ -522,15 +539,17 @@ void XlsxFile::parseSharedStringsInterleaved() {
         }
         if (t.inside()) {
             if (tBufferLength >= tBufferSize) {
+                stringCount.store(-1);
                 throw std::runtime_error("String exceeded allowed size");
             } else {
                 tBuffer[tBufferLength++] = current;
             }
         }
     }
+    stringCount.store(-1);
 
     if (uniqueCount > 0 && numSharedStrings != uniqueCount) {
-        throw std::runtime_error("Mismatch between expected and parsed strings");
+        throw std::runtime_error("Mismatch between expected and parsed strings (" + std::to_string(uniqueCount) + " vs " + std::to_string(numSharedStrings) + ")");
     }
 
     if (!mz_zip_reader_extract_iter_free(state)) {
@@ -591,34 +610,76 @@ const STRING_TYPE XlsxFile::getString(const long long index) const {
     if (index < 0 || index >= mSharedStrings.size()) {
         throw std::runtime_error("String index out of bounds");
     }
+    while (stringCount.load() <= index && stringCount.load() >= 0) continue;
     return mSharedStrings[index];
 }
 
-void XlsxFile::unescape(char* buffer) const {
+void XlsxFile::unescape(char* buffer, const size_t buffer_size) const {
     size_t replaced = 0;
     size_t i = 0;
-    while (buffer[i] != '\0') {
+    while (buffer[i] != '\0' && i < buffer_size) {
         if (buffer[i] == '&') {
-            if (strncmp(&buffer[i+1], "amp;", 4) == 0) {
+            if (i+4 < buffer_size && strncmp(&buffer[i+1], "amp;", 4) == 0) {
                 buffer[i-replaced] = '&';
                 replaced += 4;
                 i += 4;
-            } else if (strncmp(&buffer[i+1], "apos;", 5) == 0) {
+            } else if (i+5 < buffer_size && strncmp(&buffer[i+1], "apos;", 5) == 0) {
                 buffer[i-replaced] = '\'';
                 replaced += 5;
                 i += 5;
-            } else if (strncmp(&buffer[i+1], "quot;", 5) == 0) {
+            } else if (i+5 < buffer_size && strncmp(&buffer[i+1], "quot;", 5) == 0) {
                 buffer[i-replaced] = '"';
                 replaced += 5;
                 i += 5;
-            } else if (strncmp(&buffer[i+1], "gt;", 3) == 0) {
+            } else if (i+3 < buffer_size && strncmp(&buffer[i+1], "gt;", 3) == 0) {
                 buffer[i-replaced] = '>';
                 replaced += 3;
                 i += 3;
-            } else if (strncmp(&buffer[i+1], "lt;", 3) == 0) {
+            } else if (i+3 < buffer_size && strncmp(&buffer[i+1], "lt;", 3) == 0) {
                 buffer[i-replaced] = '<';
                 replaced += 3;
                 i += 3;
+            } else if (i+3 < buffer_size && buffer[i+1] == '#') {
+                // numeric character reference
+                bool hex = buffer[i+2] == 'x';
+                size_t j = 2 + hex;
+                size_t num = 0;
+                // convert escape string to codepoint
+                while (i+j < buffer_size && buffer[i+j] != '\0') {
+                    if (buffer[i+j] == ';') break;
+                    if (hex) {
+                        if ((buffer[i+j] >= '0' && buffer[i+j] <= '9')) {
+                            num = (num * 16) + (buffer[i+j] - '0');
+                        } else if (buffer[i+j] >= 'A' && buffer[i+j] <= 'F') {
+                            num = (num * 16) + 10 + (buffer[i+j] - 'A');
+                        } else if (buffer[i+j] >= 'a' && buffer[i+j] <= 'f') {
+                            num = (num * 16) + 10 + (buffer[i+j] - 'a');
+                        }
+                    } else {
+                        num = (num * 10) + (buffer[i+j] - '0');
+                    }
+                    j++;
+                }
+                //std::cout << "Numeric character reference: " << num << std::endl;
+                // convert codepoint to utf-8
+                if (num < 0x80) {
+                    buffer[i-replaced] = static_cast<unsigned char>(num);
+                } else if (num < 0x800) {
+                    buffer[i-replaced] = static_cast<unsigned char>(num >> 6) | 0xc0;
+                    buffer[i-replaced+1] = static_cast<unsigned char>(num & 0x3f) | 0x80;
+                } else if (num < 0x10000) {
+                    buffer[i-replaced] = static_cast<unsigned char>(num >> 12) | 0xe0;
+                    buffer[i-replaced+1] = static_cast<unsigned char>((num >> 6) & 0x3f) | 0x80;
+                    buffer[i-replaced+2] = static_cast<unsigned char>(num & 0x3f) | 0x80;
+                    //std::cout << "3 bytes: " << static_cast<unsigned int>(static_cast<unsigned char>(num >> 12) | 0xe0) << " " << static_cast<unsigned int>(static_cast<unsigned char>((num >> 6) & 0x3f) | 0x80) << " " << static_cast<unsigned int>(static_cast<unsigned char>(num & 0x3f) | 0x80) << std::endl;
+                } else {
+                    buffer[i-replaced] = static_cast<unsigned char>(num >> 18) | 0xf0;
+                    buffer[i-replaced+1] = static_cast<unsigned char>((num >> 12) & 0x3f) | 0x80;
+                    buffer[i-replaced+2] = static_cast<unsigned char>((num >> 6) & 0x3f) | 0x80;
+                    buffer[i-replaced+3] = static_cast<unsigned char>(num & 0x3f) | 0x80;
+                }
+                replaced += j - (num >= 0x80) - (num >= 0x800) - (num >= 0x10000);
+                i += j;
             }
         } else {
             buffer[i-replaced] = buffer[i];
@@ -626,4 +687,20 @@ void XlsxFile::unescape(char* buffer) const {
         ++i;
     }
     buffer[i - replaced] = '\0';
+}
+
+std::string XlsxFile::unescape(const std::string& string) const {
+    char staticBuf[256]{};
+    if (string.length() < 256) {
+        string.copy(staticBuf, 256);
+        unescape(staticBuf, 256);
+        return std::string(staticBuf);
+    } else {
+        char* dynamicBuf = new char[string.length() + 1];
+        string.copy(dynamicBuf, string.length());
+        unescape(dynamicBuf, string.length() + 1);
+        const std::string unescaped(dynamicBuf);
+        delete[] dynamicBuf;
+        return unescaped;
+    }
 }

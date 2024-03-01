@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <future>
+#include <atomic>
 
 #include "miniz/miniz.h"
 #if defined(TARGET_R)
@@ -27,6 +28,7 @@ public:
     bool mParallelStrings;
     std::future<void> mParallelStringFuture;
 
+    std::atomic_llong stringCount;
 #if defined(TARGET_R)
     Rcpp::CharacterVector mSharedStrings;
     std::vector<std::vector<std::string>> mDynamicStrings;
@@ -36,9 +38,9 @@ public:
     std::vector<PyObject*> mSharedStrings;
 #   define STRING_TYPE PyObject*
 #else
-    std::vector<char*> mSharedStrings;
-    std::vector<char*> mDynamicStrings;
-#   define STRING_TYPE char*
+    std::vector<std::string> mSharedStrings;
+    std::vector<std::vector<std::string>> mDynamicStrings;
+#   define STRING_TYPE std::string
 #endif
     std::set<unsigned long> mDateStyles;
 
@@ -65,5 +67,6 @@ public:
 
     bool isDate(const int style) const;
     const STRING_TYPE getString(const long long index) const;
-    void unescape(char* buffer) const;
+    void unescape(char* buffer, const size_t buffer_size) const;
+    std::string unescape(const std::string& string) const;
 };
