@@ -56,7 +56,7 @@ XlsxSheet::XlsxSheet(XlsxSheet&& sheet)
     , mArchiveIndex(sheet.mArchiveIndex)
     , mHeaders(sheet.mHeaders)
     , mDimension(0, 0)
-    , specifiedTypes(false)
+    , mSpecifiedTypes(false)
 {
 }
 
@@ -66,14 +66,14 @@ XlsxSheet::XlsxSheet(XlsxFile& parentFile, mz_zip_archive* file, int archiveInde
     , mArchiveIndex(archiveIndex)
     , mHeaders(false)
     , mDimension(0, 0)
-    , specifiedTypes(false)
+    , mSpecifiedTypes(false)
 {
 }
 
 void XlsxSheet::specifyTypes(std::vector<CellType> colTypesByIndex, std::map<std::string, CellType> colTypesByName) {
-    this->specifiedTypes = true;
-    this->colTypesByIndex = colTypesByIndex;
-    this->colTypesByName = colTypesByName;
+    this->mSpecifiedTypes = true;
+    this->mColTypesByIndex = colTypesByIndex;
+    this->mColTypesByName = colTypesByName;
 }
 
 bool XlsxSheet::interleaved(const int skipRows, const int skipColumns, const int numThreads) {
@@ -93,7 +93,7 @@ bool XlsxSheet::interleaved(const int skipRows, const int skipColumns, const int
     std::atomic_bool terminate(false);
     std::atomic_bool finishedWriting(false);
     std::mutex headerMutex;
-    std::atomic_int headerDone(colTypesByName.size() > 0 ? numThreads : 0); // only have to wait on header if any colTypesByName
+    std::atomic_int headerDone(mColTypesByName.size() > 0 ? numThreads : 0); // only have to wait on header if any mColTypesByName
 
     std::vector<std::thread> parseThreads;
     parseThreads.reserve(numThreads - 1);
@@ -127,7 +127,8 @@ bool XlsxSheet::interleaved(const int skipRows, const int skipColumns, const int
             throw std::runtime_error("Failed to initialize sheet reader state");
         }
 
-        const auto checkIndexes = [](const size_t indexMod, const std::vector<std::atomic_size_t>& readIndexes) {
+        // shouldn't need to capture numBuffers (constexpr), but MSVC throws error
+        const auto checkIndexes = [&](const size_t indexMod, const std::vector<std::atomic_size_t>& readIndexes) {
             for (const auto& index : readIndexes) {
                 if (indexMod == (index.load() % numBuffers)) return true;
             }
@@ -185,6 +186,7 @@ bool XlsxSheet::interleaved(const int skipRows, const int skipColumns, const int
 
     for (int i = 0; i < numThreads - 1; ++i) {
         try {
+            //parseThreads.push_back(std::thread(&XlsxSheet::interleavedFunc<numBuffers>, this, numThreads, i, std::ref(buffers), tbufferSize, std::cref(writeIndex), std::cref(finishedWriting), std::ref(readIndexes), std::cref(terminate), std::ref(maxDim[i])));
             parseThreads.push_back(std::thread(&XlsxSheet::interleavedFunc<numBuffers>, this, numThreads, std::ref(parseStates[i])));
         } catch (const std::system_error& e) {
             // failed to create thread, kill already created threads (including producer)
@@ -201,6 +203,7 @@ bool XlsxSheet::interleaved(const int skipRows, const int skipColumns, const int
         }
     }
 
+    //interleavedFunc<numBuffers>(numThreads, numThreads - 1, buffers, tbufferSize, writeIndex, finishedWriting, readIndexes, terminate, maxDim[numThreads - 1]);
     interleavedFunc<numBuffers>(numThreads, parseStates[numThreads - 1]);
     
     producerThread.join();
@@ -417,39 +420,41 @@ void XlsxSheet::interleavedFunc(size_t numThreads, ParseState<numBuffers>& parse
                 throw std::runtime_error("Error when parsing cell");
             }*/
             CellType coerceType = CellType::T_NONE;
-            if (specifiedTypes) {
+            if (mSpecifiedTypes) {
                 const long long calcCol = (expectedColumn - static_cast<long long>(mSkipColumns) - 1);
                 if (mHeaders && (expectedRow - mSkipRows) == 0) {
-                    std::lock_guard<std::mutex>(parseState.headerMutex);
+                    std::lock_guard<std::mutex> guard(parseState.headerMutex);
                     //std::cout << "Header " << parseState.threadId << ": " << expectedRow << " / " << expectedColumn << ", " << static_cast<int>(cellType) << ": " << cellValueBuffer << std::endl;
-                    if (colTypesByName.size() > 0) {
-                        // 1 by 1 remove from colTypesByName and insert into colTypesByIndex
+                    if (mColTypesByName.size() > 0) {
+                        // 1 by 1 remove from mColTypesByName and insert into mColTypesByIndex
                         std::string name;
                         if (cellType == CellType::T_STRING_REF) {
                             const unsigned long long refIdx = extractUnsigned(cellValueBuffer, 0, cellValueLength);
 #if defined(TARGET_R)
                             name = CHAR(mParentFile.getString(refIdx));
+#elif defined(TARGET_PYTHON)
+                            name = PyUnicode_AsUTF8(mParentFile.getString(refIdx));
 #else
                             name = mParentFile.getString(refIdx);
 #endif                            
                         } else {
                             name = std::string(cellValueBuffer, cellValueLength);
                         }
-                        const auto colType = colTypesByName.find(name);
-                        if (colType != colTypesByName.end()) {
-                            if (calcCol >= static_cast<long long>(colTypesByIndex.size())) colTypesByIndex.resize(calcCol + 1);
-                            colTypesByIndex[calcCol] = colType->second;
-                            colTypesByName.erase(colType);
+                        const auto colType = mColTypesByName.find(name);
+                        if (colType != mColTypesByName.end()) {
+                            if (calcCol >= static_cast<long long>(mColTypesByIndex.size())) mColTypesByIndex.resize(calcCol + 1);
+                            mColTypesByIndex[calcCol] = colType->second;
+                            mColTypesByName.erase(colType);
                         }
                     }
                 } else {
-                    // if specifiedTypes we wait until done with header to continue (headerDone init with 0 if no colTypesByName)
+                    // if mSpecifiedTypes we wait until done with header to continue (headerDone init with 0 if no mColTypesByName)
                     //if (parseState.headerDone.load() > 0) std::cout << "Wait " << parseState.threadId << ": " << expectedRow << " / " << expectedColumn << ", " << parseState.headerDone.load() << " :: " << mHeaders << ", " << (expectedRow - mSkipRows) << std::endl;
                     if (mHeaders && (expectedRow - mSkipRows) > 0 && parseState.headerDone.load() > 0) parseState.headerDone.fetch_sub(1);
                     while (parseState.headerDone.load() > 0) {
                         if (parseState.terminate.load()) return;
                     }
-                    if (calcCol < static_cast<long long>(colTypesByIndex.size())) coerceType = colTypesByIndex[calcCol];
+                    if (calcCol < static_cast<long long>(mColTypesByIndex.size())) coerceType = mColTypesByIndex[calcCol];
                 }
             }
             const bool explicitNumeric = coerceType == CellType::T_NUMERIC; // to better differentiate date <> numeric
@@ -475,6 +480,8 @@ void XlsxSheet::interleavedFunc(size_t numThreads, ParseState<numBuffers>& parse
                     const unsigned long long refIdx = extractUnsigned(cellValueBuffer, 0, cellValueLength);
 #if defined(TARGET_R)
                     const auto str = CHAR(mParentFile.getString(refIdx));
+#elif defined(TARGET_PYTHON)
+                    const auto str = PyUnicode_AsUTF8(mParentFile.getString(refIdx));
 #else
                     const auto str = mParentFile.getString(refIdx).c_str();
 #endif
@@ -514,6 +521,8 @@ void XlsxSheet::interleavedFunc(size_t numThreads, ParseState<numBuffers>& parse
                     const unsigned long long refIdx = extractUnsigned(cellValueBuffer, 0, cellValueLength);
 #if defined(TARGET_R)
                     const auto str = CHAR(mParentFile.getString(refIdx));
+#elif defined(TARGET_PYTHON)
+                    const auto str = PyUnicode_AsUTF8(mParentFile.getString(refIdx));
 #else
                     const auto str = mParentFile.getString(refIdx).c_str();
 #endif
@@ -528,7 +537,7 @@ void XlsxSheet::interleavedFunc(size_t numThreads, ParseState<numBuffers>& parse
             cells.back().push_back(cll);
             cellValueLength = 0;
             cellValueBuffer[0] = 0;
-
+            
             parseState.maxCell.first = expectedColumn;
             parseState.maxCell.second = expectedRow;
             if (expectedColumn != -1) ++expectedColumn;
@@ -559,6 +568,7 @@ void XlsxSheet::interleavedFunc(size_t numThreads, ParseState<numBuffers>& parse
 
 std::pair<size_t, std::vector<XlsxCell>> XlsxSheet::nextRow() {
     if (mCells.size() == 0) {
+        //std::cout << "Iteration stop 1" << std::endl;
         return std::make_pair(0, std::vector<XlsxCell>());
     }
     if (currentLocs.size() == 0) {
@@ -571,13 +581,16 @@ std::pair<size_t, std::vector<XlsxCell>> XlsxSheet::nextRow() {
         currentLocs = std::vector<size_t>(mCells.size(), 0);
     }
     std::vector<XlsxCell> currentValues;
-    currentValues.resize(mDimension.first - mSkipColumns, XlsxCell());
 	for (; currentBuffer < maxBuffers; ++currentBuffer) {
 		for (; currentThread < mCells.size(); ++currentThread) {
 			if (mCells[currentThread].size() == 0) {
+                //std::cout << "Iteration stop 2" << std::endl;
                 currentBuffer = maxBuffers;
-                return std::pair<size_t, std::vector<XlsxCell>>(currentRow - 1, currentValues);
+                const auto ret = std::pair<size_t, std::vector<XlsxCell>>(currentRow, currentValues);
+                currentRow = 0;
+                return ret;
 			}
+			//std::cout << currentBuffer << " / " << maxBuffers << ", " << currentThread << "/" << mCells.size() << ", " << currentCell << ", " << mCells[currentThread].size() << std::endl;
 			const std::vector<XlsxCell> cells = mCells[currentThread].front();
 			const std::vector<LocationInfo>& locs = mLocationInfos[currentThread];
 			size_t& currentLoc = currentLocs[currentThread];
@@ -585,28 +598,34 @@ std::pair<size_t, std::vector<XlsxCell>> XlsxSheet::nextRow() {
 			// currentCell <= cells.size() because there might be location info after last cell
 			for (; currentCell <= cells.size(); ++currentCell) {
 				while (currentLoc < locs.size() && locs[currentLoc].buffer == currentBuffer && locs[currentLoc].cell == currentCell) {
+					//std::cout << "loc " << currentLoc << "/" << locs.size() << ": " << locs[currentLoc].buffer << " vs " << currentBuffer << ", " << locs[currentLoc].cell << " vs " << currentCell << " (" << locs[currentLoc].column << "/" << locs[currentLoc].row << "), " << currentRow << std::endl;
 					currentColumn = locs[currentLoc].column;
 					if (locs[currentLoc].row == -1ul) {
 						++currentRow;
 					    ++currentLoc;
+                        //std::cout << "DEBUG1 " << currentRow << std::endl;
                         if (currentRow > 0) return std::pair<size_t, std::vector<XlsxCell>>(currentRow - 1, currentValues);
 					} else if (static_cast<long long>(locs[currentLoc].row) > currentRow) {
-                        const size_t nextRow = locs[currentLoc].row;
-                        if (nextRow > static_cast<size_t>(currentRow + 1)) {
+                        const long long nextRow = static_cast<long long>(locs[currentLoc].row);
+                        //std::cout << "nextRow, currentRow: " << nextRow << ", " << currentRow << std::endl;
+                        if (nextRow > currentRow + 1) {
                             ++currentRow;
                         } else {
-                            currentRow = locs[currentLoc].row;
+                            currentRow = nextRow;
                             ++currentLoc;
                         }
+                        //std::cout << "DEBUG2 " << currentRow << std::endl;
                         if (currentRow > 0) return std::pair<size_t, std::vector<XlsxCell>>(currentRow - 1, currentValues);
 					} else {
                         ++currentLoc;
                     }
 				}
+                //std::cout << "currentCell " << currentCell << " / " << cells.size() << ", " << currentColumn << std::endl;
 				if (currentCell >= cells.size()) break;
 				const auto adjustedColumn = currentColumn;
                 ++currentColumn;
 				const XlsxCell& cell = cells[currentCell];
+                if (adjustedColumn >= currentValues.size()) currentValues.resize(mDimension.first - mSkipColumns, XlsxCell());
                 currentValues[adjustedColumn] = cell;
             }
             mCells[currentThread].pop_front();
@@ -614,5 +633,7 @@ std::pair<size_t, std::vector<XlsxCell>> XlsxSheet::nextRow() {
         }
         currentThread = 0;
     }
-    return std::pair<size_t, std::vector<XlsxCell>>(0, {});
+    const auto ret = std::pair<size_t, std::vector<XlsxCell>>(currentRow, currentValues);
+    currentRow = 0;
+    return ret;
 }

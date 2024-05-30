@@ -270,7 +270,7 @@ public:
             }
             mPrevCloseSlash = false;
             if (character == '/') mPrevCloseSlash = true;
-            if (N == 0) return;
+            if constexpr (N == 0) return;
             // process attributes
             if (whitespace) {
                 // skip whitespace between attributes (also reset scans)

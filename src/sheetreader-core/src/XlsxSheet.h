@@ -79,21 +79,19 @@ public:
     XlsxSheet(XlsxSheet&& sheet);
 
     XlsxSheet(XlsxFile& parentFile, mz_zip_archive* file, int archiveIndex);
-
-    void specifyTypes(std::vector<CellType> colTypesByIndex, std::map<std::string, CellType> colTypesByName);
     
+    void specifyTypes(std::vector<CellType> colTypesByIndex, std::map<std::string, CellType> colTypesByName);
+
     bool interleaved(const int skipRows, const int skipColumns, const int numThreads);
     template<std::size_t num_buffers>
     void interleavedFunc(size_t numThreads, ParseState<num_buffers>& parseState);
 
-    // for iteration
     std::pair<size_t, std::vector<XlsxCell>> nextRow();
-    
-    std::vector<CellType> colTypesByIndex;
-private:
-    bool specifiedTypes;
-    std::map<std::string, CellType> colTypesByName;
 
+    std::vector<CellType> mColTypesByIndex;
+private:
+    bool mSpecifiedTypes;
+    std::map<std::string, CellType> mColTypesByName;
     // iteration state data
     size_t maxBuffers;
     size_t currentBuffer;

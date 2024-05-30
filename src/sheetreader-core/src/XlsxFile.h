@@ -4,10 +4,15 @@
 #include <vector>
 #include <future>
 #include <atomic>
+#include <set>
 
 #include "miniz/miniz.h"
 #if defined(TARGET_R)
 #include <Rcpp.h>
+#elif defined(TARGET_PYTHON)
+#include <Python.h>
+#else
+#include <iostream>
 #endif
 
 #include "XlsxSheet.h"
@@ -36,6 +41,7 @@ public:
 #elif defined(TARGET_PYTHON)
     //TODO
     std::vector<PyObject*> mSharedStrings;
+    std::vector<std::vector<std::string>> mDynamicStrings;
 #   define STRING_TYPE PyObject*
 #else
     std::vector<std::string> mSharedStrings;
@@ -66,7 +72,7 @@ public:
     bool getFile(int fileIndex, size_t& fileOffset, size_t& compSize, size_t& uncompSize) const;
 
     bool isDate(const int style) const;
-    const STRING_TYPE getString(const long long index) const;
+    STRING_TYPE getString(const long long index) const;
     void unescape(char* buffer, const size_t buffer_size) const;
     std::string unescape(const std::string& string) const;
 };

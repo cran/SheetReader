@@ -392,28 +392,28 @@ void XlsxFile::prepareDynamicStrings(const int numThreads) {
 }
 
 unsigned long long XlsxFile::addDynamicString(const int threadId, const char* str) {
-#if defined(TARGET_R)
-    const unsigned long idx = mDynamicStrings[threadId].size();
-    mDynamicStrings[threadId].push_back(str);
-#elif defined(TARGET_PYTHON)
+//#if defined(TARGET_R)
+//    const unsigned long idx = mDynamicStrings[threadId].size();
+//    mDynamicStrings[threadId].push_back(str);
+//#elif defined(TARGET_PYTHON)
     //TODO:
-#else
+//#else
     // insert threadId as 16 most-significant bits in returned string index
     const unsigned long long baseIndex = mDynamicStrings[threadId].size();
     mDynamicStrings[threadId].push_back(str);
     const unsigned long long idx = baseIndex | ((static_cast<unsigned long long>(threadId) & 0xFFull) << 56);
-#endif
+//#endif
     return idx;
 }
 
 const std::string& XlsxFile::getDynamicString(const int threadId, const unsigned long long index) const {
-#if defined(TARGET_R)
-    return mDynamicStrings[threadId][index];
-#else
-    if (threadId >= 0) return mDynamicStrings[threadId][index & 0xFFFFFFFFFFFFFFull];
+//#if defined(TARGET_R)
+//    return mDynamicStrings[threadId][index];
+//#else
+    //if (threadId >= 0) return mDynamicStrings[threadId][index & 0xFFFFFFFFFFFFFFull];
     // decode embedded threadId
     return mDynamicStrings[index >> 56][index & 0xFFFFFFFFFFFFFFull];
-#endif
+//#endif
 }
 
 XlsxSheet XlsxFile::getSheet(const int id) {
@@ -489,7 +489,7 @@ void XlsxFile::parseSharedStringsInterleaved() {
 #if defined(TARGET_R)
                 mSharedStrings = Rcpp::CharacterVector(uniqueCount);
 #elif defined(TARGET_PYTHON)
-                //TODO:
+                mSharedStrings.reserve(uniqueCount);
 #else
                 mSharedStrings.reserve(uniqueCount);
 #endif
@@ -526,13 +526,15 @@ void XlsxFile::parseSharedStringsInterleaved() {
             unescape(tBuffer, tBufferLength);
             mSharedStrings[numSharedStrings++] = Rf_mkCharCE(tBuffer, CE_UTF8);
 #elif defined(TARGET_PYTHON)
-            //TODO:
+            unescape(tBuffer);
+            mSharedStrings.push_back(PyUnicode_FromString(tBuffer));
+            numSharedStrings++;
 #else
             unescape(tBuffer, tBufferLength);
             mSharedStrings.push_back(tBuffer);
             numSharedStrings = mSharedStrings.size();
-            stringCount.fetch_add(1);
 #endif
+            stringCount.fetch_add(1);
             tBufferLength = 0;
             tBuffer[0] = 0;
             continue;
@@ -606,11 +608,11 @@ bool XlsxFile::getFile(const int fileIndex, size_t& fileOffset, size_t& compSize
     return true;
 }
 
-const STRING_TYPE XlsxFile::getString(const long long index) const {
+STRING_TYPE XlsxFile::getString(const long long index) const {
     if (index < 0 || index >= mSharedStrings.size()) {
         throw std::runtime_error("String index out of bounds");
     }
-    while (stringCount.load() <= index && stringCount.load() >= 0) continue;
+    while (stringCount.load() <= index && stringCount.load() >= 0) continue; // for if strings are loaded parallel & user-specified columns by headers
     return mSharedStrings[index];
 }
 
